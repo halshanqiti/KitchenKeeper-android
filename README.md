@@ -26,7 +26,7 @@ The native app stores data on this phone and does not automatically synchronise 
 
 ## Build and verify
 
-GitHub Actions runs `lintRelease`, compiles the application and instrumented tests, then launches an API 35 Android emulator. Tests exercise actual native screens, offline persistence, recipe saving, activity recreation, grocery batches, backup validation, on-device OCR, Android Keystore encryption and citation/barcode gates. They do not contact paid AI services or test a physical camera.
+GitHub Actions runs `lintRelease`, compiles the application and instrumented tests, then launches an API 36 (Android 16) emulator. Tests exercise actual native screens, offline persistence, recipe saving, activity recreation, grocery batches, backup validation, on-device OCR, Android Keystore encryption and citation/barcode gates. They do not contact paid AI services or test a physical camera.
 
 The **Kitchenkeeper-Native-Android** artifact contains an **unsigned** release APK, build metadata, checksums, emulator screenshots and the Android signing utility. It must be signed before installation. The signed APK supplied separately is signed privately with a stable key. No signing key or user API key is committed to this public repository. Keep the private signing backup for future updates.
 
