@@ -7,3 +7,7 @@ app/build/
 *.jks
 *.keystore
 keystore.properties
+
+*.p12
+*.pass
+private-signing/

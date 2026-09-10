@@ -1,174 +1,143 @@
 package com.kitchenkeeper.android;
 
-import android.app.Activity;
-import android.app.AlertDialog;
-import android.content.ActivityNotFoundException;
-import android.content.Intent;
+import android.app.DatePickerDialog;
+import android.content.*;
 import android.content.res.ColorStateList;
-import android.graphics.Insets;
-import android.graphics.Typeface;
-import android.os.Build;
-import android.os.Bundle;
+import android.graphics.*;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
-import android.view.Gravity;
-import android.view.View;
-import android.view.WindowInsets;
-import android.widget.Button;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
-import android.widget.ScrollView;
-import android.widget.TextView;
-import android.widget.Toast;
+import android.os.Bundle;
+import android.provider.MediaStore;
+import android.text.*;
+import android.text.method.LinkMovementMethod;
+import android.text.style.URLSpan;
+import android.view.*;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.*;
+import androidx.activity.OnBackPressedCallback;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.app.AlertDialog;
+import androidx.core.content.FileProvider;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import com.google.android.material.appbar.MaterialToolbar;
+import com.google.android.material.bottomnavigation.BottomNavigationView;
+import com.google.android.material.button.MaterialButton;
+import com.google.android.material.card.MaterialCardView;
+import com.google.android.material.checkbox.MaterialCheckBox;
+import com.google.android.material.chip.Chip;
+import com.google.android.material.chip.ChipGroup;
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.google.android.material.progressindicator.CircularProgressIndicator;
+import com.google.android.material.textfield.TextInputEditText;
+import com.google.android.material.textfield.TextInputLayout;
+import com.google.android.material.textfield.MaterialAutoCompleteTextView;
+import com.google.mlkit.vision.barcode.common.Barcode;
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions;
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning;
+import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.text.TextRecognition;
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
+import org.json.*;
+import java.io.*;
+import java.time.LocalDate;
+import java.util.*;
+import java.util.concurrent.*;
+import static com.kitchenkeeper.android.KitchenStore.*;
 
-import androidx.browser.customtabs.CustomTabColorSchemeParams;
-import androidx.browser.customtabs.CustomTabsClient;
-import androidx.browser.customtabs.CustomTabsIntent;
+/** Native Android UI. No WebView, browser activity, cookies or remote login is used for app screens. */
+public final class MainActivity extends AppCompatActivity {
+    private static final int FOREST=0xff123e31, INK=0xff193429, MUTED=0xff63716a, PAPER=0xfff5f7f2, LIME=0xffe6edcf;
+    private static final int PHOTO=301, CAPTURE=302, EXPORT=303, IMPORT=304;
+    private final ExecutorService executor=Executors.newSingleThreadExecutor(),images=Executors.newFixedThreadPool(2);
+    private KitchenStore store; private Photos photos; private PrivateKey keys; private KitchenApi api;
+    private LinearLayout root,body,rows; private ScrollView scroll; private MaterialToolbar toolbar; private BottomNavigationView nav;
+    private String page="home",lastRoot="home",query="",filter="All",editType="",detailId="",pendingPhoto="",photoPurpose="",aiMode="recipes",aiQuestion="";
+    private boolean shareInventory=false,exportPhotos=true;
+    private JSONObject draft,answer; private final Map<String,EditText> fields=new LinkedHashMap<>(); private final Map<String,TextInputLayout> fieldLayouts=new HashMap<>(); private AlertDialog progress;
+    private interface Work<T>{T run()throws Exception;} private interface Result<T>{void accept(T value);}
 
-/**
- * Android entry point for the existing private Kitchenkeeper application.
- *
- * Custom Tabs deliberately uses the device browser's real sign-in session.
- * No credentials, cookies or JavaScript bridges are copied into this app.
- * The browser also handles the existing photo picker, downloads and sharing.
- */
-public final class MainActivity extends Activity {
-    private boolean launching;
-
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        renderHome();
-        if (savedInstanceState == null) {
-            getWindow().getDecorView().post(this::openKitchen);
-        }
+    @Override protected void onCreate(Bundle state){super.onCreate(state);store=new KitchenStore(this);photos=new Photos(this);keys=new PrivateKey(this);api=new KitchenApi(this,keys);buildFrame();
+      if(state!=null){page=state.getString("page","home");lastRoot=state.getString("root","home");editType=state.getString("editType","");detailId=state.getString("detail","");pendingPhoto=state.getString("pendingPhoto","");photoPurpose=state.getString("purpose","");aiMode=state.getString("aiMode","recipes");aiQuestion=state.getString("question","");shareInventory=state.getBoolean("share",false);try{String d=state.getString("draft");if(d!=null)draft=new JSONObject(d);String a=state.getString("answer");if(a!=null)answer=new JSONObject(a);}catch(JSONException ignored){draft=null;}}
+      show(page);getOnBackPressedDispatcher().addCallback(this,new OnBackPressedCallback(true){@Override public void handleOnBackPressed(){back();}});
     }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        launching = false;
+    @Override protected void onSaveInstanceState(Bundle state){if(page.equals("edit"))collect();super.onSaveInstanceState(state);state.putString("page",page);state.putString("root",lastRoot);state.putString("editType",editType);state.putString("detail",detailId);state.putString("pendingPhoto",pendingPhoto);state.putString("purpose",photoPurpose);state.putString("aiMode",aiMode);state.putString("question",aiQuestion);state.putBoolean("share",shareInventory);if(draft!=null)state.putString("draft",draft.toString());if(answer!=null&&answer.toString().length()<150000)state.putString("answer",answer.toString());}
+    @Override protected void onDestroy(){if(progress!=null)progress.dismiss();executor.shutdownNow();images.shutdownNow();super.onDestroy();}
+    private void buildFrame(){WindowCompat.setDecorFitsSystemWindows(getWindow(),false);WindowCompat.getInsetsController(getWindow(),getWindow().getDecorView()).setAppearanceLightStatusBars(false);root=column();root.setBackgroundColor(FOREST);setContentView(root);ViewCompat.setOnApplyWindowInsetsListener(root,(v,insets)->{androidx.core.graphics.Insets bars=insets.getInsets(WindowInsetsCompat.Type.systemBars()|WindowInsetsCompat.Type.displayCutout()),ime=insets.getInsets(WindowInsetsCompat.Type.ime());v.setPadding(bars.left,bars.top,bars.right,Math.max(bars.bottom,ime.bottom));return insets;});
+      toolbar=new MaterialToolbar(this);toolbar.setTitle("kitchenkeeper.");toolbar.setTitleTextColor(Color.WHITE);toolbar.setNavigationIconTint(Color.WHITE);toolbar.setBackgroundColor(FOREST);toolbar.setContentInsetStartWithNavigation(dp(12));root.addView(toolbar,new LinearLayout.LayoutParams(-1,dp(60)));toolbar.getMenu().add(0,11,0,"Cooking assistant").setIcon(R.drawable.ic_sparkles).setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS);toolbar.getMenu().add(0,12,1,"Settings").setIcon(R.drawable.ic_settings).setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS);toolbar.setOnMenuItemClickListener(m->{if(page.equals("edit")){confirmLeave(()->show(m.getItemId()==11?"ai":"settings"));}else show(m.getItemId()==11?"ai":"settings");return true;});toolbar.setNavigationOnClickListener(v->back());
+      scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.setBackgroundColor(PAPER);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));body=column();body.setPadding(dp(20),dp(22),dp(20),dp(32));scroll.addView(body,new ScrollView.LayoutParams(-1,-2));
+      nav=new BottomNavigationView(this);nav.setBackgroundColor(Color.WHITE);nav.setLabelVisibilityMode(1);nav.setItemActiveIndicatorColor(ColorStateList.valueOf(LIME));nav.setItemIconTintList(new ColorStateList(new int[][]{{android.R.attr.state_checked},{}},new int[]{FOREST,MUTED}));nav.setItemTextColor(new ColorStateList(new int[][]{{android.R.attr.state_checked},{}},new int[]{FOREST,MUTED}));String[] names={"Kitchen","Food","Tools","Recipes","Shop"};int[] icons={R.drawable.ic_home,R.drawable.ic_food,R.drawable.ic_tools,R.drawable.ic_book,R.drawable.ic_shop};for(int i=0;i<names.length;i++)nav.getMenu().add(0,i+1,i,names[i]).setIcon(icons[i]);nav.setOnItemSelectedListener(item->{String next=new String[]{"home","food","tools","recipes","shop"}[item.getItemId()-1];query="";filter="All";show(next);return true;});root.addView(nav,new LinearLayout.LayoutParams(-1,dp(80)));}
+    private boolean rootPage(String p){return Arrays.asList("home","food","tools","recipes","shop").contains(p);}
+    private void show(String next){page=next;body.removeAllViews();fields.clear();fieldLayouts.clear();rows=null;scroll.scrollTo(0,0);boolean main=rootPage(next);nav.setVisibility(main?View.VISIBLE:View.GONE);toolbar.setNavigationIcon(main?0:R.drawable.ic_back);if(main){lastRoot=next;int index=Arrays.asList("home","food","tools","recipes","shop").indexOf(next);nav.getMenu().getItem(index).setChecked(true);}switch(next){case "food":inventory("grocery");break;case "tools":inventory("equipment");break;case "recipes":recipes();break;case "shop":shopping();break;case "settings":settings();break;case "ai":assistant();break;case "edit":if(draft==null)show(lastRoot);else editor();break;case "detail":itemDetail();break;case "recipe_detail":recipeDetail();break;default:home();}}
+    private void back(){if(page.equals("edit")){confirmLeave(()->show(lastRoot));}else if(!page.equals("home")){query="";filter="All";show(lastRoot.equals(page)?"home":lastRoot);}else moveTaskToBack(true);}
+    private void confirmLeave(Runnable action){new MaterialAlertDialogBuilder(this).setTitle("Leave this draft?").setMessage("Your saved kitchen is unchanged. This unsaved draft will be discarded.").setNegativeButton("Keep editing",null).setPositiveButton("Discard draft",(d,w)->{draft=null;editType="";action.run();}).show();}
+    private int dp(int n){return Math.round(n*getResources().getDisplayMetrics().density);}
+    private LinearLayout column(){LinearLayout v=new LinearLayout(this);v.setOrientation(LinearLayout.VERTICAL);return v;}
+    private TextView text(String value,int size,int color){TextView t=new TextView(this);t.setText(value);t.setTextSize(size);t.setTextColor(color);t.setLineSpacing(dp(2),1.08f);return t;}
+    private TextView heading(String value,int size){TextView t=text(value,size,INK);t.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));return t;}
+    private void add(LinearLayout parent,View child,int top){LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.topMargin=dp(top);parent.addView(child,lp);}
+    private void caption(LinearLayout parent,String value){add(parent,text(value,14,MUTED),10);}
+    private void title(String eyebrow,String heading,String sub){TextView e=text(eyebrow,11,MUTED);e.setLetterSpacing(.13f);body.addView(e);add(body,heading(heading,30),8);if(!sub.isEmpty())caption(body,sub);}
+    private MaterialButton button(String label,int icon,boolean primary,Runnable click){MaterialButton b=new MaterialButton(this,null,primary?com.google.android.material.R.attr.materialButtonStyle:com.google.android.material.R.attr.materialButtonOutlinedStyle);b.setText(label);b.setAllCaps(false);b.setTextSize(14);b.setCornerRadius(dp(14));b.setMinHeight(dp(50));b.setInsetTop(dp(2));b.setInsetBottom(dp(2));if(icon!=0){b.setIconResource(icon);b.setIconSize(dp(19));}b.setOnClickListener(v->click.run());return b;}
+    private LinearLayout panel(LinearLayout parent,int top){MaterialCardView card=new MaterialCardView(this);card.setCardBackgroundColor(Color.WHITE);card.setRadius(dp(18));card.setCardElevation(0);card.setStrokeWidth(dp(1));card.setStrokeColor(0xffdce5d7);LinearLayout inside=column();inside.setPadding(dp(18),dp(18),dp(18),dp(18));card.addView(inside);add(parent,card,top);return inside;}
+    private void notice(LinearLayout parent,String message){TextView t=text(message,14,0xff596135);t.setPadding(dp(14),dp(12),dp(14),dp(12));GradientDrawable g=new GradientDrawable();g.setColor(0xfff1f3df);g.setCornerRadius(dp(12));t.setBackground(g);add(parent,t,14);}
+    private void toast(String message){Toast.makeText(this,message,Toast.LENGTH_LONG).show();}
+    private void error(Exception e){if(isFinishing()||isDestroyed())return;new MaterialAlertDialogBuilder(this).setTitle("Please check").setMessage(e.getMessage()==null?"This action could not be completed.":e.getMessage()).setPositiveButton("OK",null).show();}
+    private <T> void task(String message,Work<T> work,Result<T> done){LinearLayout box=column();box.setPadding(dp(25),dp(18),dp(25),dp(18));CircularProgressIndicator p=new CircularProgressIndicator(this);p.setIndeterminate(true);box.addView(p);caption(box,message);progress=new MaterialAlertDialogBuilder(this).setTitle("One moment").setView(box).setCancelable(false).show();executor.submit(()->{try{T result=work.run();runOnUiThread(()->{if(isDestroyed()||isFinishing())return;if(progress!=null)progress.dismiss();done.accept(result);});}catch(Exception e){runOnUiThread(()->{if(isDestroyed()||isFinishing())return;if(progress!=null)progress.dismiss();error(e);});}});}
+    private List<JSONObject> stock(String kind){List<JSONObject> all=new ArrayList<>();for(JSONObject o:store.records("items"))if(o.optString("kind").equals(kind))all.add(o);all.sort(Comparator.comparing(o->o.optString("name").toLowerCase(Locale.ROOT)));return all;}
+    private void home(){List<JSONObject> food=stock("grocery"),tools=stock("equipment");title("YOUR NATIVE KITCHEN","Your kitchen,\nat a glance.","Saved on this phone · available offline");LinearLayout stats=new LinearLayout(this);stats.setOrientation(LinearLayout.HORIZONTAL);for(int i=0;i<2;i++){final int tab=i;LinearLayout box=column();box.setPadding(dp(18),dp(16),dp(18),dp(16));GradientDrawable bg=new GradientDrawable();bg.setColor(i==0?FOREST:LIME);bg.setCornerRadius(dp(18));box.setBackground(bg);int color=i==0?Color.WHITE:INK;box.addView(text(i==0?"Groceries":"Equipment",14,color));add(box,text(String.valueOf(i==0?food.size():tools.size()),36,color),5);add(box,text(i==0?"See your food →":"See your tools →",12,color),4);box.setOnClickListener(v->show(tab==0?"food":"tools"));box.setContentDescription((i==0?"Groceries ":"Equipment ")+(i==0?food.size():tools.size()));box.setFocusable(true);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,-1,1);if(i==0)lp.setMarginEnd(dp(10));stats.addView(box,lp);}add(body,stats,22);
+      add(body,button("Scan & add",R.drawable.ic_scan,true,()->scanMenu("grocery",false)),18);add(body,button("What can I cook?",R.drawable.ic_sparkles,false,()->show("ai")),5);
+      LinearLayout soon=panel(body,22);soon.addView(heading("Use soon",20));caption(soon,"Past date or due within 3 days. Dates do not determine food safety.");int count=0;for(JSONObject o:food)if(o.optDouble("quantity")>0&&days(o.optString("expiry"))<=3&&count++<5)itemRow(soon,o,false);if(count==0)caption(soon,food.isEmpty()?"Add your first groceries to make this kitchen yours.":"No recorded dates need attention. Add packaging dates as you go.");
+      LinearLayout low=panel(body,16);low.addView(heading("Running low",20));int n=0;for(JSONObject o:food)if(o.optDouble("quantity")<=o.optDouble("minimum")&&n++<5){add(low,button(o.optString("name")+" · add to shopping",R.drawable.ic_plus,false,()->shopFrom(o)),8);}if(n==0)caption(low,"Set a low-stock level on groceries to plan your next shop.");
+      LinearLayout places=panel(body,16);places.addView(heading("Look inside",20));for(String place:store.places()){int total=0;for(JSONObject o:store.records("items"))if(o.optString("location").equals(place))total++;final String selected=place;add(places,button(place+" · "+total+" items",R.drawable.ic_home,false,()->{filter=selected;show("food");}),5);}
+      LinearLayout journal=panel(body,16);journal.addView(heading("Worth cooking again.",21));caption(journal,"Keep the recipes you tried, your ratings and what to change next time.");add(journal,button("Open recipe book",R.drawable.ic_book,false,()->show("recipes")),10);
     }
-
-    @Override
-    protected void onNewIntent(Intent intent) {
-        super.onNewIntent(intent);
-        setIntent(intent);
-        launching = false;
-        openKitchen();
+    private void searchBox(String hint,Runnable change){TextInputLayout layout=new TextInputLayout(this);layout.setHint(hint);layout.setBoxBackgroundMode(TextInputLayout.BOX_BACKGROUND_OUTLINE);layout.setBoxCornerRadii(dp(14),dp(14),dp(14),dp(14));TextInputEditText input=new TextInputEditText(layout.getContext());input.setSingleLine(true);input.setText(query);input.setTextSize(16);layout.addView(input);input.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int st,int c,int a){}public void onTextChanged(CharSequence s,int start,int before,int count){query=s.toString();change.run();}public void afterTextChanged(Editable e){}});add(body,layout,20);}
+    private void chips(List<String> labels,Runnable refresh){ChipGroup group=new ChipGroup(this);group.setSingleSelection(true);group.setSelectionRequired(true);for(String label:labels){Chip c=new Chip(this);c.setText(label);c.setCheckable(true);c.setChecked(filter.equals(label));c.setEnsureMinTouchTargetSize(true);c.setOnClickListener(v->{filter=label;refresh.run();});group.addView(c);}add(body,group,12);}
+    private void inventory(String kind){title("YOUR DIGITAL KITCHEN",kind.equals("grocery")?"Groceries.":"Equipment.",kind.equals("grocery")?"Everything you have, wherever you keep it.":"Appliances, cookware and the tools you love.");add(body,button(kind.equals("grocery")?"Add grocery":"Add equipment",R.drawable.ic_plus,true,()->edit("items",blankItem(kind))),15);add(body,button("Scan barcode or label",R.drawable.ic_scan,false,()->scanMenu(kind,false)),4);searchBox("Search name, barcode, brand…",()->inventoryRows(kind));List<String> choices=new ArrayList<>(Arrays.asList("All","Use soon","Low stock"));if(kind.equals("equipment"))choices=new ArrayList<>(Collections.singletonList("All"));choices.addAll(store.places());chips(choices,()->inventoryRows(kind));rows=column();add(body,rows,8);inventoryRows(kind);}
+    private void inventoryRows(String kind){if(rows==null)return;rows.removeAllViews();int count=0;for(JSONObject o:stock(kind)){String hay=(o.optString("name")+" "+o.optString("brand")+" "+o.optString("model")+" "+o.optString("barcode")+" "+o.optString("ingredients")).toLowerCase(Locale.ROOT);if(!hay.contains(query.trim().toLowerCase(Locale.ROOT)))continue;if(filter.equals("Use soon")&&(o.optDouble("quantity")<=0||days(o.optString("expiry"))>3))continue;if(filter.equals("Low stock")&&o.optDouble("quantity")>o.optDouble("minimum"))continue;if(!Arrays.asList("All","Use soon","Low stock").contains(filter)&&!filter.equals(o.optString("location")))continue;itemRow(rows,o,true);count++;if(count>=200){caption(rows,"Showing up to 200 matches. Search or choose a place to narrow the list.");break;}}if(count==0){LinearLayout blank=panel(rows,12);blank.addView(heading("A little room to fill.",21));caption(blank,"Add an item or change your search and filters.");}}
+    private void picture(LinearLayout parent,String id,int height){if(!photos.exists(id))return;ImageView v=new ImageView(this);v.setScaleType(ImageView.ScaleType.CENTER_CROP);v.setContentDescription("Saved photo");LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,dp(height));lp.bottomMargin=dp(12);parent.addView(v,lp);String tag=id+height;v.setTag(tag);images.submit(()->{BitmapFactory.Options options=new BitmapFactory.Options();options.inSampleSize=height>100?2:8;Bitmap bitmap=BitmapFactory.decodeFile(photos.file(id).getAbsolutePath(),options);runOnUiThread(()->{if(!isDestroyed()&&tag.equals(v.getTag())&&bitmap!=null)v.setImageBitmap(bitmap);});});}
+    private void itemRow(LinearLayout parent,JSONObject item,boolean quantityButtons){LinearLayout card=panel(parent,12);card.addView(heading(item.optString("name"),18));caption(card,item.optString("location")+" · "+number(item.optDouble("quantity"))+" "+item.optString("unit"));if(!item.optString("expiry").isEmpty())caption(card,dateLabel(item.optString("expiry")));if(!item.optString("brand").isEmpty())caption(card,item.optString("brand")+(item.optString("model").isEmpty()?"":" · "+item.optString("model")));add(card,button("View details",R.drawable.ic_next,false,()->{detailId=item.optString("id");show("detail");}),8);if(quantityButtons&&item.optString("kind").equals("grocery")){LinearLayout actions=new LinearLayout(this);for(int delta:new int[]{-1,1}){MaterialButton b=button(delta<0?"Use one":"Add one",delta<0?R.drawable.ic_minus:R.drawable.ic_plus,false,()->{try{JSONObject updated=copy(item);put(updated,"quantity",Math.max(0,item.optDouble("quantity")+delta));store.update("items",updated);inventoryRows("grocery");}catch(Exception e){error(e);}});b.setEnabled(delta>0||item.optDouble("quantity")>0);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(52),1);if(delta<0)lp.setMarginEnd(dp(8));actions.addView(b,lp);}add(card,actions,4);}}
+    private void itemDetail(){JSONObject o=store.get(detailId,"items");if(o==null){show(lastRoot);return;}title(o.optString("category").toUpperCase(Locale.ROOT),o.optString("name"),o.optString("location")+" · "+number(o.optDouble("quantity"))+" "+o.optString("unit"));picture(body,o.optString("photo"),210);add(body,button("Edit item",R.drawable.ic_edit,true,()->edit("items",o)),16);add(body,button("Read more label details",R.drawable.ic_scan,false,()->{editType="items";draft=copy(o);scanMenu(o.optString("kind"),true);}),4);for(String[] f:new String[][]{{"expiry","Expiry / best before"},{"opened","Opened on"},{"brand","Brand"},{"model","Model"},{"serial","Serial number"},{"purchased","Purchased"},{"warranty","Warranty ends"},{"barcode","Barcode"},{"packageSize","Package size"},{"ingredients","Ingredients"},{"allergens","Allergen wording"},{"nutrition","Nutrition"},{"storageInstructions","Storage / care instructions"},{"notes","Notes"},{"labelText","Label transcription"}})detail(f[1],o.optString(f[0]));if(!o.optString("sourceName").isEmpty())notice(body,"Source: "+o.optString("sourceName")+". Check current packaging, especially dates and allergens; blank fields mean unknown.");sourceButton(o.optString("sourceUrl"),"View product source");if(o.optString("kind").equals("grocery"))add(body,button("Add to shopping list",R.drawable.ic_shop,true,()->shopFrom(o)),20);deleteButton("items",o);}
+    private void detail(String label,String value){if(value.isEmpty())return;LinearLayout box=panel(body,14);box.addView(heading(label,15));TextView t=text(value,16,MUTED);t.setTextIsSelectable(true);add(box,t,8);}
+    private void sourceButton(String url,String label){if(!url.isEmpty()&&safeUrl(url))add(body,button(label,R.drawable.ic_external,false,()->openSource(url)),12);}
+    private void openSource(String url){if(!safeUrl(url)||url.isEmpty()){error(new Exception("This source link is invalid."));return;}try{startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(url)));}catch(ActivityNotFoundException e){error(new Exception("No app is available to open this source link."));}}
+    private void deleteButton(String type,JSONObject o){add(body,button("Remove "+(type.equals("recipes")?"recipe":"item"),R.drawable.ic_delete,false,()->new MaterialAlertDialogBuilder(this).setTitle("Remove this entry?").setMessage("This deletes the saved entry from this phone. Export a backup first if you want to keep a copy.").setNegativeButton("Keep",null).setPositiveButton("Remove",(d,w)->{try{store.remove(type,o);show(lastRoot);}catch(Exception e){error(e);}}).show()),20);}
+    private void edit(String type,JSONObject value){editType=type;draft=copy(value);show("edit");}
+    private EditText field(LinearLayout parent,String key,String label,int lines,boolean numeric,String[] options){TextInputLayout box=new TextInputLayout(this);box.setHint(label);box.setBoxBackgroundMode(TextInputLayout.BOX_BACKGROUND_OUTLINE);box.setBoxCornerRadii(dp(12),dp(12),dp(12),dp(12));EditText input;if(options!=null){MaterialAutoCompleteTextView dropdown=new MaterialAutoCompleteTextView(box.getContext());dropdown.setSimpleItems(options);dropdown.setInputType(android.text.InputType.TYPE_CLASS_TEXT);box.setEndIconMode(TextInputLayout.END_ICON_DROPDOWN_MENU);input=dropdown;}else input=new TextInputEditText(box.getContext());input.setTextSize(16);input.setText(draft.optString(key));input.setId(View.generateViewId());input.setTag(key);input.setFilters(new InputFilter[]{new InputFilter.LengthFilter(lines>1?24000:500)});if(lines>1){input.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE|android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);input.setMinLines(lines);input.setGravity(Gravity.TOP);}else if(numeric)input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER|android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);else input.setSingleLine(true);box.addView(input);fields.put(key,input);fieldLayouts.put(key,box);add(parent,box,14);return input;}
+    private void dateField(LinearLayout parent,String key,String label){EditText input=field(parent,key,label+" · YYYY-MM-DD",1,false,null);TextInputLayout box=fieldLayouts.get(key);box.setEndIconMode(TextInputLayout.END_ICON_CUSTOM);box.setEndIconDrawable(R.drawable.ic_calendar);box.setEndIconContentDescription("Choose "+label);box.setEndIconOnClickListener(v->{LocalDate day;try{day=LocalDate.parse(input.getText().toString());}catch(Exception e){day=LocalDate.now();}DatePickerDialog picker=new DatePickerDialog(this,(view,y,m,d)->input.setText(LocalDate.of(y,m+1,d).toString()),day.getYear(),day.getMonthValue()-1,day.getDayOfMonth());picker.setButton(DialogInterface.BUTTON_NEUTRAL,"Clear",(dialog,which)->input.setText(""));picker.show();});}
+    private void collect(){if(draft==null)return;for(Map.Entry<String,EditText> entry:fields.entrySet())put(draft,entry.getKey(),entry.getValue().getText().toString().trim());}
+    private void editor(){boolean recipe=editType.equals("recipes"),shopping=editType.equals("shopping");title(draft.optInt("revision")==0?"MAKE IT YOURS":"YOUR SAVED DETAILS",recipe?"Save a recipe.":shopping?"Shopping item.":draft.optString("kind").equals("grocery")?"Grocery details.":"Equipment details.",recipe?"Your own version, and what you learned.":"Check the details, then save to this phone.");if(!draft.optString("scanMessage").isEmpty())notice(body,draft.optString("scanMessage"));if(!draft.optString("sourceName").isEmpty())notice(body,"Details from "+draft.optString("sourceName")+". Review every field against the package.");
+      if(!shopping){picture(body,draft.optString("photo"),170);add(body,button(draft.optString("photo").isEmpty()?"Add photo":"Change photo",R.drawable.ic_camera,false,()->{collect();choosePhoto("attach");}),10);if(!draft.optString("photo").isEmpty())add(body,button("Remove photo",0,false,()->{collect();put(draft,"photo","");show("edit");}),2);}
+      field(body,recipe?"title":"name",recipe?"Recipe name":"Item name",1,false,null);
+      if(recipe){field(body,"servings","Servings",1,true,null);field(body,"minutes","Total time · minutes",1,true,null);field(body,"ingredients","Ingredients · one per line",4,false,null);field(body,"method","Your method",5,false,null);field(body,"sourceUrl","Original recipe link · optional",1,false,null);dateField(body,"triedOn","Last tried on");add(body,heading("How did it go?",21),24);RatingBar rating=new RatingBar(this);rating.setIsIndicator(false);rating.setNumStars(5);rating.setStepSize(1);rating.setRating(draft.optInt("rating"));rating.setContentDescription("Recipe rating");rating.setOnRatingBarChangeListener((b,r,from)->put(draft,"rating",Math.round(r)));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(48));lp.topMargin=dp(12);body.addView(rating,lp);MaterialCheckBox favorite=new MaterialCheckBox(this);favorite.setText("Keep in favourites");favorite.setChecked(draft.optInt("favorite")==1);favorite.setOnCheckedChangeListener((b,c)->put(draft,"favorite",c?1:0));add(body,favorite,10);field(body,"notes","Notes & changes for next time",4,false,null);
+      }else{field(body,"quantity","Quantity",1,true,null);field(body,"unit","Unit",1,false,UNITS);field(body,"location","Stored in",1,false,store.places().toArray(new String[0]));field(body,"category","Category",1,false,draft.optString("kind","grocery").equals("equipment")?TOOL_CATEGORIES:FOOD_CATEGORIES);if(!shopping){boolean food=draft.optString("kind").equals("grocery");if(food){dateField(body,"expiry","Expiry / best before");field(body,"minimum","Low-stock level",1,true,null);}add(body,button("Read label into this draft",R.drawable.ic_scan,false,()->{collect();scanMenu(draft.optString("kind"),true);}),16);LinearLayout advanced=column();add(body,button("More details",R.drawable.ic_plus,false,()->advanced.setVisibility(advanced.getVisibility()==View.VISIBLE?View.GONE:View.VISIBLE)),8);add(body,advanced,0);advanced.setVisibility(draft.optString("sourceName").isEmpty()?View.GONE:View.VISIBLE);if(food)dateField(advanced,"opened","Opened on");field(advanced,"brand","Brand",1,false,null);if(!food){field(advanced,"model","Model",1,false,null);field(advanced,"serial","Serial number",1,false,null);dateField(advanced,"purchased","Purchased on");dateField(advanced,"warranty","Warranty ends");}field(advanced,"barcode","Barcode",1,false,null);field(advanced,"packageSize","Printed package size · not stock quantity",1,false,null);for(String[] f:new String[][]{{"ingredients","Ingredients"},{"allergens","Allergen wording · blank means unknown"},{"nutrition","Nutrition · include units and basis"},{"storageInstructions","Storage / care instructions"},{"labelText","Full label transcription"},{"notes","Notes"}})field(advanced,f[0],f[1],3,false,null);field(advanced,"sourceName","Source name",1,false,null);field(advanced,"sourceUrl","Source link",1,false,null);}}
+      add(body,button(recipe?"Save recipe":shopping?"Save to shopping list":"Save item",R.drawable.ic_check,true,this::saveDraft),24);
     }
-
-    private void openKitchen() {
-        if (launching || isFinishing()) return;
-        launching = true;
-        Uri url = Uri.parse(getString(R.string.kitchen_url));
-        try {
-            CustomTabColorSchemeParams colors = new CustomTabColorSchemeParams.Builder()
-                    .setToolbarColor(getColor(R.color.forest))
-                    .setNavigationBarColor(getColor(R.color.background))
-                    .build();
-            CustomTabsIntent tab = new CustomTabsIntent.Builder()
-                    .setDefaultColorSchemeParams(colors)
-                    .setColorScheme(CustomTabsIntent.COLOR_SCHEME_LIGHT)
-                    .setShowTitle(true)
-                    .setUrlBarHidingEnabled(true)
-                    .setShareState(CustomTabsIntent.SHARE_STATE_ON)
-                    .build();
-
-            // Prefer a supporting browser, including the user's default when possible.
-            // A null package leaves normal browser resolution available as a fallback.
-            String browserPackage = CustomTabsClient.getPackageName(this, null);
-            if (browserPackage != null) tab.intent.setPackage(browserPackage);
-            tab.launchUrl(this, url);
-        } catch (ActivityNotFoundException exception) {
-            launching = false;
-            new AlertDialog.Builder(this)
-                    .setTitle(R.string.no_browser_title)
-                    .setMessage(R.string.no_browser_message)
-                    .setPositiveButton(R.string.ok, null)
-                    .show();
-        } catch (SecurityException exception) {
-            launching = false;
-            Toast.makeText(this, R.string.launch_failed, Toast.LENGTH_LONG).show();
-        }
-    }
-
-    private void renderHome() {
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.setBackgroundColor(getColor(R.color.background));
-
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setGravity(Gravity.CENTER);
-        content.setPadding(dp(28), dp(36), dp(28), dp(36));
-        scroll.addView(content, new ScrollView.LayoutParams(
-                ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.MATCH_PARENT));
-
-        ImageView icon = new ImageView(this);
-        icon.setImageResource(R.drawable.kitchenkeeper);
-        icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        content.addView(icon, new LinearLayout.LayoutParams(dp(88), dp(88)));
-
-        TextView title = text(R.string.welcome_title, 30, R.color.foreground);
-        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        add(content, title, 24);
-
-        TextView description = text(R.string.welcome_description, 17, R.color.muted);
-        add(content, description, 16);
-
-        Button open = new Button(this);
-        open.setText(R.string.open_kitchen);
-        open.setTextSize(16);
-        open.setAllCaps(false);
-        open.setTextColor(getColor(R.color.white));
-        open.setBackgroundTintList(ColorStateList.valueOf(getColor(R.color.forest)));
-        open.setMinHeight(dp(54));
-        open.setPadding(dp(24), dp(12), dp(24), dp(12));
-        open.setOnClickListener(view -> openKitchen());
-        add(content, open, 26);
-
-        add(content, text(R.string.account_hint, 15, R.color.muted), 22);
-        add(content, text(R.string.connection_hint, 14, R.color.muted), 14);
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            getWindow().setDecorFitsSystemWindows(false);
-        }
-        scroll.setOnApplyWindowInsetsListener((view, insets) -> {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                Insets bars = insets.getInsets(WindowInsets.Type.systemBars()
-                        | WindowInsets.Type.displayCutout());
-                view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-            } else {
-                view.setPadding(insets.getSystemWindowInsetLeft(),
-                        insets.getSystemWindowInsetTop(),
-                        insets.getSystemWindowInsetRight(),
-                        insets.getSystemWindowInsetBottom());
-            }
-            return insets;
-        });
-        setContentView(scroll);
-        scroll.requestApplyInsets();
-    }
-
-    private TextView text(int resource, int size, int color) {
-        TextView view = new TextView(this);
-        view.setText(resource);
-        view.setTextSize(size);
-        view.setTextColor(getColor(color));
-        view.setGravity(Gravity.CENTER);
-        view.setLineSpacing(dp(3), 1f);
-        return view;
-    }
-
-    private void add(LinearLayout parent, View child, int topMargin) {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        params.topMargin = dp(topMargin);
-        parent.addView(child, params);
-    }
-
-    private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
-    }
+    private void saveDraft(){collect();try{JSONObject out=copy(draft);String[] nums=editType.equals("recipes")?new String[]{"servings","minutes"}:editType.equals("items")?new String[]{"quantity","minimum"}:new String[]{"quantity"};for(String k:nums){String value=out.optString(k,"0");if(value.isEmpty())throw new IllegalArgumentException("Enter a value for "+k+".");double n=Double.parseDouble(value);put(out,k,n);}JSONObject saved=store.update(editType,out);if(!editType.equals("recipes"))store.addPlace(saved.optString("location"));String next=editType.equals("recipes")?"recipes":editType.equals("shopping")?"shop":saved.optString("kind").equals("grocery")?"food":"tools";draft=null;editType="";hideKeyboard();toast("Saved on your phone.");show(next);}catch(Exception e){error(e);}}
+    private void hideKeyboard(){View focus=getCurrentFocus();if(focus!=null)((InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(focus.getWindowToken(),0);}
+    private void recipes(){title("GOOD FOOD, WORTH REMEMBERING","Your recipe book.",store.records("recipes").size()+" recipes saved on this phone");add(body,button("Save a recipe",R.drawable.ic_plus,true,()->edit("recipes",blankRecipe())),16);searchBox("Search recipe, ingredient or notes…",this::recipeRows);chips(Arrays.asList("All","Favourites","Tried by me"),this::recipeRows);rows=column();add(body,rows,4);recipeRows();}
+    private void recipeRows(){if(rows==null)return;rows.removeAllViews();int count=0;for(JSONObject o:store.records("recipes")){if(filter.equals("Favourites")&&o.optInt("favorite")==0)continue;if(filter.equals("Tried by me")&&o.optString("triedOn").isEmpty())continue;if(!(o.optString("title")+" "+o.optString("ingredients")+" "+o.optString("notes")).toLowerCase(Locale.ROOT).contains(query.toLowerCase(Locale.ROOT)))continue;LinearLayout card=panel(rows,14);picture(card,o.optString("photo"),150);card.addView(heading(o.optString("title"),22));caption(card,number(o.optDouble("servings"))+" servings"+(o.optInt("minutes")>0?" · "+o.optInt("minutes")+" min":"")+(o.optInt("favorite")==1?" · Favourite":""));if(o.optInt("rating")>0)caption(card,o.optInt("rating")+" / 5 stars");caption(card,o.optString("triedOn").isEmpty()?"Saved for later":"Tried "+o.optString("triedOn"));add(card,button("Open recipe",R.drawable.ic_book,false,()->{detailId=o.optString("id");show("recipe_detail");}),10);count++;if(count>=200)break;}if(count==0){LinearLayout empty=panel(rows,14);empty.addView(heading("Keep the recipes you love.",21));caption(empty,"Add your method, a source link and a photo. Record what worked and what you would change.");}}
+    private void recipeDetail(){JSONObject o=store.get(detailId,"recipes");if(o==null){show("recipes");return;}title("FROM YOUR RECIPE BOOK",o.optString("title"),number(o.optDouble("servings"))+" servings · "+o.optInt("minutes")+" minutes");picture(body,o.optString("photo"),220);add(body,button("Edit recipe",R.drawable.ic_edit,true,()->edit("recipes",o)),16);if(o.optString("triedOn").isEmpty())add(body,button("I tried it today",R.drawable.ic_check,false,()->{JSONObject updated=copy(o);put(updated,"triedOn",LocalDate.now().toString());edit("recipes",updated);}),6);else detail("My experience","Tried "+o.optString("triedOn")+(o.optInt("rating")>0?" · "+o.optInt("rating")+"/5 stars":""));detail("Ingredients",o.optString("ingredients"));detail("Method",o.optString("method"));detail("Notes & changes",o.optString("notes"));sourceButton(o.optString("sourceUrl"),"Open original recipe");deleteButton("recipes",o);}
+    private void shopFrom(JSONObject item){for(JSONObject existing:store.records("shopping"))if(existing.optString("itemId").equals(item.optString("id"))&&existing.optInt("checked")==0){edit("shopping",existing);return;}JSONObject s=blankShopping();for(String k:new String[]{"name","unit","category","location"})put(s,k,item.opt(k));put(s,"quantity",Math.max(1,item.optDouble("minimum")-item.optDouble("quantity")+1));put(s,"itemId",item.optString("id"));edit("shopping",s);}
+    private void shopping(){List<JSONObject> list=store.records("shopping");int checked=0;for(JSONObject s:list)checked+=s.optInt("checked")==1?1:0;title("THE NEXT GROCERY RUN","Shopping list.",(list.size()-checked)+" to pick up · "+checked+" bought");add(body,button("Add to shopping list",R.drawable.ic_plus,true,()->edit("shopping",blankShopping())),16);if(!list.isEmpty())add(body,button("Share list",R.drawable.ic_share,false,()->{StringBuilder lines=new StringBuilder();for(JSONObject s:store.records("shopping"))if(s.optInt("checked")==0)lines.append("☐ ").append(s.optString("name")).append(" — ").append(number(s.optDouble("quantity"))).append(' ').append(s.optString("unit")).append('\n');Intent share=new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,lines.toString());startActivity(Intent.createChooser(share,"Share shopping list"));}),6);list.sort(Comparator.comparingInt(o->o.optInt("checked")));for(JSONObject s:list){LinearLayout card=panel(body,12);MaterialCheckBox check=new MaterialCheckBox(this);check.setText(s.optString("name")+" · "+number(s.optDouble("quantity"))+" "+s.optString("unit"));check.setTextSize(17);check.setChecked(s.optInt("checked")==1);check.setOnCheckedChangeListener((b,c)->{try{JSONObject updated=copy(s);put(updated,"checked",c?1:0);store.update("shopping",updated);show("shop");}catch(Exception e){error(e);}});card.addView(check);caption(card,s.optString("location"));add(card,button("Edit",R.drawable.ic_edit,false,()->edit("shopping",s)),4);add(card,button("Remove",R.drawable.ic_delete,false,()->{try{store.remove("shopping",s);show("shop");}catch(Exception e){error(e);}}),0);}if(checked>0){notice(body,"Put away your purchases when you finish shopping. Dated or opened groceries stay in separate batches; add each new package’s date afterwards.");add(body,button("Put away bought groceries",R.drawable.ic_check,true,()->new MaterialAlertDialogBuilder(this).setTitle("Put away your purchases?").setMessage("Bought items move into inventory and leave the shopping list.").setNegativeButton("Not yet",null).setPositiveButton("Put away",(d,w)->{try{int n=store.restock();toast(n+" purchases put away. Check new expiry dates.");show("food");}catch(Exception e){error(e);}}).show()),12);}if(list.isEmpty()){LinearLayout empty=panel(body,18);empty.addView(heading("A fresh shopping list.",22));caption(empty,"Add what you need, tick it when bought, then put it away into your kitchen.");}}
+    private void scanMenu(String kind,boolean existing){if(page.equals("edit"))collect();String[] choices=existing?new String[]{"Read label on device","Read label with AI","Look up barcode","Enter barcode digits"}:new String[]{"Scan barcode","Read label on device","Read label with AI","Enter barcode digits","Add manually"};new MaterialAlertDialogBuilder(this).setTitle(existing?"Add product details":"Scan & add "+(kind.equals("grocery")?"food":"equipment")).setItems(choices,(dialog,index)->{if(!existing){draft=blankItem(kind);editType="items";}String choice=choices[index];if(choice.equals("Add manually")){edit("items",draft);return;}if(choice.contains("label")){if(choice.contains("AI")&&!keys.connected()){aiConnection();return;}show("edit");choosePhoto(choice.contains("AI")?"label_ai":"label_ocr");}else if(choice.contains("digits")){manualBarcode();}else scanBarcode();}).setNegativeButton("Cancel",null).show();}
+    private void scanBarcode(){GmsBarcodeScannerOptions options=new GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_EAN_13,Barcode.FORMAT_EAN_8,Barcode.FORMAT_UPC_A,Barcode.FORMAT_UPC_E,Barcode.FORMAT_ITF).enableAutoZoom().build();GmsBarcodeScanning.getClient(this,options).startScan().addOnSuccessListener(this,code->{try{String digits=KitchenApi.barcode(code.getRawValue()==null?"":code.getRawValue(),code.getFormat()==Barcode.FORMAT_UPC_E);lookup(digits);}catch(Exception e){error(e);}}).addOnCanceledListener(this,()->toast("Scan cancelled.")).addOnFailureListener(this,e->new MaterialAlertDialogBuilder(this).setTitle("Scanner unavailable").setMessage("The scanner may need its first Google Play services download. Connect to the internet and try again, or type the barcode.").setNegativeButton("Close",null).setPositiveButton("Enter digits",(d,w)->manualBarcode()).show());}
+    private void manualBarcode(){EditText code=new EditText(this);code.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);code.setHint("EAN / UPC / GTIN");code.setContentDescription("Barcode digits");code.setText(draft==null?"":draft.optString("barcode"));LinearLayout box=column();box.setPadding(dp(22),0,dp(22),0);box.addView(code);AlertDialog d=new MaterialAlertDialogBuilder(this).setTitle("Enter barcode digits").setView(box).setNegativeButton("Cancel",null).setPositiveButton("Look up",null).create();d.setOnShowListener(v->d.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener(view->{try{String digits=KitchenApi.barcode(code.getText().toString(),false);d.dismiss();lookup(digits);}catch(Exception e){code.setError(e.getMessage());}}));d.show();}
+    private void lookup(String digits){if(draft==null){draft=blankItem("grocery");editType="items";}final String kind=draft.optString("kind");put(draft,"barcode",digits);task("Looking for an exact barcode match…",()->api.product(digits,kind),result->{mergeScan(result);show("edit");});}
+    private void mergeScan(JSONObject scan){if(draft==null)draft=blankItem(scan.optString("kind","grocery"));String oldSource=draft.optString("sourceName");for(String k:new String[]{"name","brand","model","serial","barcode","packageSize","ingredients","allergens","nutrition","storageInstructions","labelText","expiry","sourceName","sourceUrl","scanMessage"})if(!scan.optString(k).isEmpty())put(draft,k,scan.optString(k));if(scan.optString("sourceUrl").isEmpty()&&!oldSource.isEmpty()&&!scan.optString("sourceName").isEmpty()&&!oldSource.equals(scan.optString("sourceName")))put(draft,"sourceName",oldSource+" + "+scan.optString("sourceName"));editType="items";}
+    private void choosePhoto(String purpose){photoPurpose=purpose;new MaterialAlertDialogBuilder(this).setTitle(purpose.equals("attach")?"Add a photo":"Photograph one clear label").setMessage(purpose.equals("label_ai")?"This photo will be sent to OpenAI using your API account. Review the returned details before saving.":purpose.equals("label_ocr")?"On-device OCR reads Latin-script text without sending the photo online. For Arabic or complex labels, choose AI label reading.":"The photo is saved in this app on your phone.").setItems(new String[]{"Take photo","Choose existing photo"},(d,i)->{try{if(i==0){File camera=new File(getCacheDir(),"camera");camera.mkdirs();File image=new File(camera,"capture-"+System.currentTimeMillis()+".jpg");Uri uri=FileProvider.getUriForFile(this,getPackageName()+".photos",image);pendingPhoto=uri.toString();Intent intent=new Intent(MediaStore.ACTION_IMAGE_CAPTURE).putExtra(MediaStore.EXTRA_OUTPUT,uri).addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION|Intent.FLAG_GRANT_READ_URI_PERMISSION);intent.setClipData(ClipData.newRawUri("Photo",uri));startActivityForResult(intent,CAPTURE);}else{Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("image/*");startActivityForResult(intent,PHOTO);}}catch(ActivityNotFoundException e){error(new Exception("No camera or photo picker is available. Try the other option."));}}).setNegativeButton("Cancel",null).show();}
+    @Override protected void onActivityResult(int request,int result,Intent data){super.onActivityResult(request,result,data);if(result!=RESULT_OK)return;if(request==PHOTO||request==CAPTURE){Uri uri=request==CAPTURE?Uri.parse(pendingPhoto):data==null?null:data.getData();if(uri==null||draft==null)return;String purpose=photoPurpose;task("Preparing your photo…",()->photos.add(uri),id->{put(draft,"photo",id);show("edit");if(purpose.equals("label_ocr"))readLabelOffline(id);else if(purpose.equals("label_ai")){String kind=draft.optString("kind","grocery");task("Reading visible label details with AI…",()->api.label(photos.dataUrl(id),kind),scan->{mergeScan(scan);put(draft,"photo",id);show("edit");});}});}else if(request==EXPORT&&data!=null&&data.getData()!=null){Uri uri=data.getData();task("Writing your kitchen backup…",()->{JSONObject backup=store.exportData();if(exportPhotos)photos.export(backup);byte[] bytes=backup.toString(2).getBytes(java.nio.charset.StandardCharsets.UTF_8);try(OutputStream out=getContentResolver().openOutputStream(uri,"wt")){if(out==null)throw new IOException("Could not open the backup destination.");out.write(bytes);}return "Backup exported. Keep it somewhere safe.";},this::toast);}else if(request==IMPORT&&data!=null&&data.getData()!=null){Uri uri=data.getData();new MaterialAlertDialogBuilder(this).setTitle("Import this kitchen backup?").setMessage("New entries will be added. Matching existing entries will be kept. The earlier web export contains photo references rather than photo files, so those photos must be added again.").setNegativeButton("Cancel",null).setPositiveButton("Import",(d,w)->task("Importing your saved kitchen…",()->{JSONObject backup=new JSONObject(new String(Photos.read(getContentResolver().openInputStream(uri),55000000),java.nio.charset.StandardCharsets.UTF_8));Set<String> created=photos.importPhotos(backup);try{return store.importData(backup,photos.present());}catch(Exception e){photos.remove(created);throw e;}},message->{toast(message);show("home");})).show();}}
+    private void readLabelOffline(String id){try{com.google.mlkit.vision.text.TextRecognizer reader=TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);InputImage input=InputImage.fromFilePath(this,Uri.fromFile(photos.file(id)));reader.process(input).addOnSuccessListener(this,result->{String raw=result.getText();if(raw.trim().isEmpty()){toast("No readable Latin text found. Try AI reading for Arabic or take a clearer photo.");return;}JSONObject scan=KitchenApi.textDraft(raw,draft.optString("kind","grocery"));mergeScan(scan);put(draft,"photo",id);put(draft,"scanMessage","On-device transcription is a draft. Check the name, ingredients and every field. Dates are left for you to enter from the package.");show("edit");}).addOnFailureListener(this,e->error(new Exception("The label could not be read. Try a clearer photo or AI label reading."))).addOnCompleteListener(task->reader.close());}catch(Exception e){error(e);}}
+    private void settings(){title("MAKE YOURSELF AT HOME","Your kitchen, your way.","Native Android · version 2.0");LinearLayout local=panel(body,20);local.addView(heading("Saved on this phone",20));caption(local,"Inventory, recipes and photos live in this app’s private storage. They work offline. Uninstalling this native app removes its local data, so keep a backup.");add(local,button("Export backup with photos",R.drawable.ic_download,true,()->export(true)),12);add(local,button("Export records only",R.drawable.ic_download,false,()->export(false)),4);add(local,button("Import kitchen backup",R.drawable.ic_upload,false,this::importBackup),4);
+      LinearLayout old=panel(body,16);old.addView(heading("Bring your earlier kitchen",19));caption(old,"In your previous kitchen, use Settings → Export kitchen & recipes. Save the JSON file, then import it above. Web photos need to be added again. The native app does not automatically sync with that earlier kitchen.");add(old,button("Open earlier kitchen for export",R.drawable.ic_external,false,()->openSource("https://kitchenkeeper.haya-s-7617.chatgpt.site")),12);
+      LinearLayout ai=panel(body,16);ai.addView(heading("Your AI connection",20));caption(ai,keys.connected()?"OpenAI connected · key ending "+keys.hint():"Optional: connect an OpenAI API key for label reading and source-linked cooking ideas.");add(ai,button("AI connection settings",R.drawable.ic_sparkles,false,this::aiConnection),12);caption(ai,"API usage is billed separately from ChatGPT. Questions and selected label photos go to OpenAI only when you use those features. Inventory sharing is optional.");
+      LinearLayout places=panel(body,16);places.addView(heading("Storage places",20));caption(places,String.join(" · ",store.places()));add(places,button("Add a storage place",R.drawable.ic_plus,false,()->{EditText input=new EditText(this);input.setHint("e.g. Spice drawer");input.setPadding(dp(22),dp(18),dp(22),dp(18));AlertDialog dialog=new MaterialAlertDialogBuilder(this).setTitle("Add a storage place").setView(input).setNegativeButton("Cancel",null).setPositiveButton("Save",null).create();dialog.setOnShowListener(v->dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener(b->{try{store.addPlace(input.getText().toString());dialog.dismiss();show("settings");}catch(Exception e){input.setError(e.getMessage());}}));dialog.show();}),12);
+      LinearLayout info=panel(body,16);info.addView(heading("Good to know",20));caption(info,"Barcode lookups use Open Food Facts (ODbL) and UPCitemdb. Coverage varies, and matching entries may be incomplete. Check the actual package for dates and allergens.");caption(info,"On-device text recognition handles Latin-script print. AI label reading can handle other visible languages, including Arabic, but can make mistakes.");caption(info,"Sources support the cooking assistant’s answers; they do not guarantee that every AI claim is correct. Date reminders appear inside the app.");sourceButton("https://github.com/halshanqiti/KitchenKeeper-android","Source code & build history");}
+    private void export(boolean withPhotos){exportPhotos=withPhotos;try{startActivityForResult(new Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/json").putExtra(Intent.EXTRA_TITLE,"kitchenkeeper-"+LocalDate.now()+".json"),EXPORT);}catch(ActivityNotFoundException e){error(new Exception("No document picker is available."));}}
+    private void importBackup(){try{startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*").putExtra(Intent.EXTRA_MIME_TYPES,new String[]{"application/json","text/plain","application/octet-stream"}),IMPORT);}catch(ActivityNotFoundException e){error(new Exception("No document picker is available."));}}
+    private void aiConnection(){LinearLayout content=column();content.setPadding(dp(22),dp(8),dp(22),dp(10));caption(content,"The key is encrypted with Android Keystore and stays on this phone. OpenAI API usage is billed separately from ChatGPT.");TextInputLayout wrapper=new TextInputLayout(this);wrapper.setHint("OpenAI API key");wrapper.setEndIconMode(TextInputLayout.END_ICON_PASSWORD_TOGGLE);TextInputEditText input=new TextInputEditText(wrapper.getContext());input.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);input.setSingleLine(true);input.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);wrapper.addView(input);add(content,wrapper,16);if(keys.connected())caption(content,"Connected · key ending "+keys.hint());caption(content,"Label reading sends the selected photo. Cooking research sends your question and optionally stocked kitchen details. Web-search queries may include terms from your question or inventory. Responses are requested without API response storage; provider policies still apply.");AlertDialog dialog=new MaterialAlertDialogBuilder(this).setTitle("Connect OpenAI").setView(content).setNegativeButton("Close",null).setNeutralButton(keys.connected()?"Disconnect":"Get API key",null).setPositiveButton("Save & check",null).create();dialog.setOnShowListener(v->{dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener(b->{String key=input.getText()==null?"":input.getText().toString().trim();if(key.length()<20||key.length()>500){input.setError("Check the API key.");return;}dialog.dismiss();task("Checking your API connection…",()->{api.checkKey(key);return true;},ok->{input.setText("");toast("AI connection saved securely on this phone.");if(page.equals("settings"))show("settings");});});dialog.getButton(DialogInterface.BUTTON_NEUTRAL).setOnClickListener(b->{if(keys.connected()){keys.clear();dialog.dismiss();toast("API key disconnected.");if(page.equals("settings"))show("settings");}else openSource("https://platform.openai.com/api-keys");});});dialog.show();}
+    private void assistant(){title("A LITTLE HELP IN THE KITCHEN","Ask, then explore.","Cooking ideas with the sources behind them.");LinearLayout card=panel(body,18);card.addView(heading("What are you curious about?",21));caption(card,"Find published recipes, understand your equipment, or research a cooking technique.");String[] names={"Recipes","Equipment","Cooking tips"},modes={"recipes","equipment","hacks"};ChipGroup group=new ChipGroup(this);group.setSingleSelection(true);group.setSelectionRequired(true);for(int i=0;i<3;i++){final String mode=modes[i];Chip c=new Chip(this);c.setText(names[i]);c.setCheckable(true);c.setChecked(aiMode.equals(mode));c.setEnsureMinTouchTargetSize(true);c.setOnClickListener(v->aiMode=mode);group.addView(c);}add(card,group,12);TextInputLayout wrapper=new TextInputLayout(this);wrapper.setHint("Your cooking question");wrapper.setBoxBackgroundMode(TextInputLayout.BOX_BACKGROUND_OUTLINE);TextInputEditText question=new TextInputEditText(wrapper.getContext());question.setInputType(android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE|android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);question.setMinLines(4);question.setGravity(Gravity.TOP);question.setText(aiQuestion);question.setFilters(new InputFilter[]{new InputFilter.LengthFilter(2500)});question.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int st,int c,int a){}public void onTextChanged(CharSequence s,int st,int before,int count){aiQuestion=s.toString();}public void afterTextChanged(Editable e){}});wrapper.addView(question);add(card,wrapper,15);add(card,button("What can I cook with my groceries?",R.drawable.ic_food,false,()->question.setText("Find a published recipe that fits the groceries and tools I have.")),8);MaterialCheckBox consent=new MaterialCheckBox(this);consent.setText("Use what is in my kitchen");consent.setChecked(shareInventory);consent.setOnCheckedChangeListener((b,c)->shareInventory=c);add(card,consent,8);caption(card,"When selected, shares up to 100 stocked items with quantities, dates and allergen wording. Private notes and serial numbers are excluded.");add(card,button("Ask Kitchenkeeper",R.drawable.ic_sparkles,true,()->{String q=question.getText()==null?"":question.getText().toString().trim();if(q.length()<5){question.setError("Add a more specific question.");return;}if(!keys.connected()){aiConnection();return;}hideKeyboard();List<JSONObject> inventory=store.records("items");String mode=aiMode;boolean include=shareInventory;task("Searching supporting sources…",()->api.advice(q,mode,inventory,include),result->{put(result,"question",q);put(result,"mode",mode);put(result,"inventoryIncluded",include);answer=result;show("ai");});}),12);add(card,button("AI connection",R.drawable.ic_settings,false,this::aiConnection),2);notice(body,"AI can misread evidence. Answers search selected food-safety authorities, recipe publishers and manufacturers. Check linked sources for safety advice and your exact appliance.");if(answer!=null)renderAnswer();}
+    private void renderAnswer(){LinearLayout box=panel(body,20);box.addView(heading(answer.optString("question"),22));caption(box,answer.optString("createdAt")+" · "+(answer.optBoolean("inventoryIncluded")?"Kitchen details included":"Question only"));JSONArray blocks=answer.optJSONArray("blocks");if(blocks!=null)for(int i=0;i<blocks.length();i++){JSONObject block=blocks.optJSONObject(i);if(block==null)continue;String raw=block.optString("text");SpannableStringBuilder styled=new SpannableStringBuilder(raw);JSONArray a=block.optJSONArray("annotations");if(a!=null)for(int k=0;k<a.length();k++){JSONObject c=a.optJSONObject(k);if(c==null||!c.optString("type").equals("url_citation"))continue;int start=c.optInt("start_index",-1),end=c.optInt("end_index",-1);if(start>=0&&end>start&&end<=raw.length()&&KitchenApi.allowed(c.optString("url"),KitchenApi.domains(answer.optString("mode"))))styled.setSpan(new URLSpan(c.optString("url")),start,end,Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);}TextView content=text("",16,INK);content.setText(styled);content.setMovementMethod(LinkMovementMethod.getInstance());content.setLinksClickable(true);content.setTextIsSelectable(true);add(box,content,18);}add(box,heading("Explore the sources",19),22);JSONArray sources=answer.optJSONArray("sources");if(sources!=null)for(int i=0;i<sources.length();i++){JSONObject c=sources.optJSONObject(i);if(c==null)continue;String title=c.optString("title","Source"),url=c.optString("url");add(box,button(title,R.drawable.ic_external,false,()->openSource(url)),8);if(answer.optString("mode").equals("recipes"))add(box,button("Save link in recipes",R.drawable.ic_plus,false,()->{JSONObject recipe=blankRecipe();put(recipe,"title",title.length()>160?title.substring(0,160):title);put(recipe,"sourceUrl",url);edit("recipes",recipe);}),0);}caption(box,"Source-linked AI guidance is not a guarantee of accuracy. Suggested recipe changes are not automatically tested.");}
 }
