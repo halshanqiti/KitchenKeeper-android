@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="forest">#123E31</color>
+    <color name="background">#F5F7F5</color>
+    <color name="foreground">#193429</color>
+    <color name="muted">#63716A</color>
+    <color name="white">#FFFFFF</color>
+</resources>
